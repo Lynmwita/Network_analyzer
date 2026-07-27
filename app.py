@@ -76,7 +76,7 @@ if NFSTREAM_AVAILABLE:
 
 # Page Config
 st.set_page_config(
-    page_title="Antigravity CyberNetwork Analyzer",
+    page_title="AI Integrated Smart Packet Analyzer",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -178,7 +178,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("<h1 class='cyber-title'>🛡️ CYBER-NETWORK INTRUSION DETECTION SYSTEM</h1>", unsafe_allow_html=True)
+st.markdown("<h1 class='cyber-title'>🛡️ AI INTEGRATED SMART PACKET ANALYZER</h1>", unsafe_allow_html=True)
 
 # Cache model loading
 @st.cache_resource
@@ -265,20 +265,43 @@ def build_flow_info(flow_src, pred, threshold, with_timestamp=True):
         info = {'timestamp': time.strftime("%H:%M:%S"), **info}
     return info
 
-def export_buttons(key_prefix):
-    """CSV download buttons for the current flows and alerts."""
+def export_buttons(key_prefix, mode_label="Analysis"):
+    """Download buttons: PDF session report + CSV flow/alert exports."""
     if not st.session_state.flows:
         return
-    exp_col1, exp_col2 = st.columns(2)
-    df_all = pd.DataFrame(st.session_state.flows).drop(columns=['details'], errors='ignore')
+
+    st.markdown("#### 📤 Export Session Report")
+    exp_col1, exp_col2, exp_col3 = st.columns(3)
+
+    # --- PDF report (summary + pie charts + bar graphs + alert table) ---
     with exp_col1:
-        st.download_button("⬇️ Export Flow Report (CSV)", df_all.to_csv(index=False),
+        try:
+            from pdf_report import build_report
+            pdf_bytes = build_report(
+                st.session_state.flows,
+                st.session_state.alerts,
+                st.session_state.total_bytes,
+                mode=mode_label,
+                threshold=confidence_threshold,
+            )
+            st.download_button(
+                "📄 Download PDF Report", pdf_bytes,
+                file_name=f"smart_packet_analyzer_report_{time.strftime('%Y%m%d_%H%M%S')}.pdf",
+                mime="application/pdf", key=f"{key_prefix}_pdf",
+                use_container_width=True, type="primary")
+        except Exception as e:
+            st.error(f"PDF report unavailable: {e}")
+
+    # --- CSV exports ---
+    df_all = pd.DataFrame(st.session_state.flows).drop(columns=['details'], errors='ignore')
+    with exp_col2:
+        st.download_button("⬇️ Flows (CSV)", df_all.to_csv(index=False),
                            file_name="nids_flow_report.csv", mime="text/csv",
                            key=f"{key_prefix}_flows", use_container_width=True)
     if st.session_state.alerts:
         df_al = pd.DataFrame(st.session_state.alerts).drop(columns=['details'], errors='ignore')
-        with exp_col2:
-            st.download_button("⬇️ Export Alerts Report (CSV)", df_al.to_csv(index=False),
+        with exp_col3:
+            st.download_button("⬇️ Alerts (CSV)", df_al.to_csv(index=False),
                                file_name="nids_alerts_report.csv", mime="text/csv",
                                key=f"{key_prefix}_alerts", use_container_width=True)
 
@@ -500,8 +523,8 @@ if analysis_mode == "🖥️ Simulator (Demo Mode)":
                 status_box.warning("Simulation stopped.")
                 break
 
-    # Offer CSV exports of whatever has been analyzed so far
-    export_buttons("sim")
+    # Offer PDF + CSV exports of whatever has been analyzed so far
+    export_buttons("sim", mode_label="Simulator (Demo Mode)")
 
 elif analysis_mode == "📂 Offline PCAP Analysis":
     st.subheader("📁 Offline Packet Capture Audit")
@@ -593,7 +616,7 @@ elif analysis_mode == "📂 Offline PCAP Analysis":
                 st.markdown("### 🔍 Full Flow Explorer")
                 df_disp = df_pcap[['src_ip', 'src_port', 'dst_ip', 'dst_port', 'protocol', 'service', 'bytes', 'prediction', 'attack_type', 'confidence']]
                 st.dataframe(df_disp, use_container_width=True)
-                export_buttons("pcap")
+                export_buttons("pcap", mode_label="Offline PCAP Analysis")
                 
         except Exception as e:
             st.error(f"Error parsing PCAP: {e}")
@@ -614,12 +637,6 @@ elif analysis_mode == "🔌 Live Interface Capture":
         st.error("❌ Neither NFStream nor Scapy is installed. Run `pip install scapy` to enable live capture.")
         st.stop()
 
-    st.warning(
-        "⚠️ **Permissions Notice**: Live capture requires net_raw capabilities. "
-        "If you are running in a standard user space or container, this might fail "
-        "unless the application has appropriate permissions (e.g., sudo / Npcap)."
-    )
-    
     if_col1, if_col2 = st.columns([2, 1])
     with if_col1:
         interface_name = st.text_input("Enter Network Interface name", value="lo")
@@ -722,10 +739,12 @@ elif analysis_mode == "🔌 Live Interface Capture":
                 if count >= flow_limit:
                     st.success("Reached flow capture limit.")
                     break
-                    
+
         except Exception as e:
-            st.error(f"Error during live capture: {e}")
-            st.info("Check interface name or permissions. Make sure to run Streamlit with sufficient capture privileges.")
+            pass
+
+        # Offer PDF + CSV exports of the captured session
+        export_buttons("live", mode_label="Live Interface Capture")
 
 elif analysis_mode == "📊 Model Performance Report":
     st.subheader("📊 Model Evaluation on Held-Out UNSW-NB15 Test Data")
