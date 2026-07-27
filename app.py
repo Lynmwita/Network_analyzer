@@ -685,7 +685,9 @@ elif analysis_mode == "🔌 Live Interface Capture":
         
         st.markdown("### 🔍 Live Flow Inspector")
         live_flows_table = st.empty()
-        
+
+        capture_status = st.empty()
+
         try:
             if NFSTREAM_AVAILABLE:
                 # Initiate NFStreamer on the network interface.
@@ -702,19 +704,43 @@ elif analysis_mode == "🔌 Live Interface Capture":
                     active_timeout=10
                 )
             else:
-                # Scapy fallback: capture a batch of packets, then aggregate to flows.
-                # This is a *blocking* window (Scapy has no incremental streaming),
-                # so keep it short and tell the user the page is busy meanwhile.
-                with st.spinner(f"Capturing for {capture_window}s on "
-                                f"'{interface_name}' — the page is busy until this "
-                                f"finishes. Generate some traffic now…"):
-                    streamer = scapy_sniff_live(
-                        interface=interface_name if interface_name not in ("", "lo") else None,
-                        packet_count=max(500, flow_limit * 10),
-                        timeout=capture_window
-                    )
-                st.info(f"Captured and aggregated {len(streamer)} flows in "
-                        f"{capture_window}s.")
+                # Scapy has no incremental streaming, so we capture short
+                # back-to-back windows and yield flows continuously until the
+                # flow limit is reached (or the network stays quiet). This is
+                # what makes "Capture Flow Limit" actually work on this engine —
+                # previously a single window returned whatever few flows it saw
+                # and the loop ended, so setting 100 could stop at 8.
+                import time as _time
+                iface = interface_name if interface_name not in ("", "lo") else None
+
+                def scapy_stream():
+                    collected = 0
+                    empty_windows = 0
+                    deadline = _time.time() + min(600, max(60, flow_limit * 3))
+                    while collected < flow_limit and _time.time() < deadline:
+                        capture_status.info(
+                            f"🎙️ Capturing… {collected}/{flow_limit} flows so far — "
+                            f"listening {capture_window}s per window on "
+                            f"'{interface_name}'. Browse a site to generate traffic."
+                        )
+                        batch = scapy_sniff_live(
+                            interface=iface,
+                            packet_count=max(500, flow_limit * 10),
+                            timeout=capture_window,
+                        )
+                        if not batch:
+                            empty_windows += 1
+                            if empty_windows >= 3:  # network is quiet — stop waiting
+                                break
+                            continue
+                        empty_windows = 0
+                        for f in batch:
+                            collected += 1
+                            yield f
+                            if collected >= flow_limit:
+                                break
+
+                streamer = scapy_stream()
 
             count = 0
             for flow in streamer:
@@ -766,8 +792,10 @@ elif analysis_mode == "🔌 Live Interface Capture":
                 
                 count += 1
                 if count >= flow_limit:
-                    st.success("Reached flow capture limit.")
+                    st.success(f"Reached flow capture limit ({flow_limit} flows).")
                     break
+
+            capture_status.empty()
 
             # Nothing was emitted — capture opened but saw no completed flows.
             if count == 0:
@@ -775,6 +803,13 @@ elif analysis_mode == "🔌 Live Interface Capture":
                     "Capture ran but no flows were recorded. Generate some traffic "
                     "(e.g. open a website) while capturing, confirm the interface "
                     f"name (`{interface_name}`) is correct, and try again."
+                )
+            elif count < flow_limit:
+                # Stopped before the limit because the network went quiet, not a bug.
+                st.info(
+                    f"Captured {count} flow(s) before traffic went quiet "
+                    f"(limit was {flow_limit}). Browse some sites and start again "
+                    "to collect more, or lower the limit."
                 )
 
         except Exception as e:
