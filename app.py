@@ -643,13 +643,23 @@ elif analysis_mode == "🔌 Live Interface Capture":
     with if_col2:
         flow_limit = st.number_input("Capture Flow Limit", min_value=10, max_value=1000, value=100)
 
-    promiscuous = st.checkbox(
-        "Promiscuous mode",
-        value=False,
-        help="Capture traffic for all hosts on the segment. Leave OFF for Wi-Fi "
-             "interfaces (e.g. wlp*/wlan*) — promiscuous mode often fails to "
-             "activate on wireless adapters ('Unable to activate source')."
-    )
+    opt_col1, opt_col2 = st.columns([1, 1])
+    with opt_col1:
+        promiscuous = st.checkbox(
+            "Promiscuous mode",
+            value=False,
+            help="Capture traffic for all hosts on the segment. Leave OFF for Wi-Fi "
+                 "interfaces (e.g. wlp*/wlan*) — promiscuous mode often fails to "
+                 "activate on wireless adapters ('Unable to activate source')."
+        )
+    with opt_col2:
+        # Only the Scapy fallback captures in a blocking batch window; NFStream streams.
+        capture_window = st.slider(
+            "Capture window (seconds)", min_value=3, max_value=30, value=8,
+            help="Scapy engine only: how long to listen before showing results. "
+                 "The page is busy during this window — a shorter value feels snappier "
+                 "on a quiet network; a longer one collects more flows."
+        ) if not NFSTREAM_AVAILABLE else 8
 
     cap_col1, cap_col2 = st.columns(2)
     with cap_col1:
@@ -692,14 +702,19 @@ elif analysis_mode == "🔌 Live Interface Capture":
                     active_timeout=10
                 )
             else:
-                # Scapy fallback: capture a batch of packets, then aggregate to flows
-                with st.spinner("Capturing packets (up to 30s or 500 packets)..."):
+                # Scapy fallback: capture a batch of packets, then aggregate to flows.
+                # This is a *blocking* window (Scapy has no incremental streaming),
+                # so keep it short and tell the user the page is busy meanwhile.
+                with st.spinner(f"Capturing for {capture_window}s on "
+                                f"'{interface_name}' — the page is busy until this "
+                                f"finishes. Generate some traffic now…"):
                     streamer = scapy_sniff_live(
                         interface=interface_name if interface_name not in ("", "lo") else None,
-                        packet_count=500,
-                        timeout=30
+                        packet_count=max(500, flow_limit * 10),
+                        timeout=capture_window
                     )
-                st.info(f"Captured and aggregated {len(streamer)} flows.")
+                st.info(f"Captured and aggregated {len(streamer)} flows in "
+                        f"{capture_window}s.")
 
             count = 0
             for flow in streamer:
