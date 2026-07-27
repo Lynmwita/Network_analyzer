@@ -210,6 +210,21 @@ confidence_threshold = st.sidebar.slider(
     help="Minimum probability required to flag a flow as malicious."
 )
 
+# Baseline-suppression toggle. The model is trained on the UNSW-NB15 lab dataset,
+# whose 'normal' class does not resemble real client traffic — so ordinary DNS
+# lookups and HTTPS browsing get over-flagged on live captures. This filter
+# suppresses those obvious false positives at the DASHBOARD level only; it does
+# NOT modify the model or its reported benchmark metrics.
+suppress_benign = st.sidebar.checkbox(
+    "🛡️ Suppress benign baseline traffic",
+    value=True,
+    help="Recommended for live/home traffic. Standard two-way client sessions to "
+         "well-known services (DNS, HTTP/S, mail, NTP, SSH) are treated as NORMAL "
+         "even if the lab-trained model flags them. Scans, floods, one-way traffic "
+         "and non-standard ports are still evaluated by the model. Untick to see "
+         "the raw model output."
+)
+
 st.sidebar.markdown("---")
 st.sidebar.info(
     "**Cybersecurity Final Year Project**\n\n"
@@ -241,9 +256,32 @@ def severity_of(pred):
         return '🟠 MEDIUM'
     return '🟡 LOW'
 
+# Well-known client services / ports whose normal, two-way sessions form the
+# benign baseline of any host and should not be treated as intrusions.
+BENIGN_SERVICES = {'dns', 'http', 'ssl', 'https', 'smtp', 'ssh', 'pop3', 'dhcp', 'ntp'}
+BENIGN_PORTS = {53, 80, 443, 25, 587, 465, 110, 143, 993, 995, 22, 67, 68, 123, 8080, 8443}
+
+def is_benign_baseline(feats, dst_port, src_port):
+    """
+    Conservative allow-list for ordinary client traffic. Returns True only for a
+    well-formed, two-way session to a well-known service/port — the exact profile
+    of DNS lookups and HTTPS browsing that the lab-trained model over-flags.
+    Deliberately does NOT cover: one-way traffic (dpkts == 0, i.e. scans/floods),
+    or non-standard ports — those still go to the model.
+    """
+    service = str(feats.get('service', '-')).lower()
+    well_known = (service in BENIGN_SERVICES
+                  or dst_port in BENIGN_PORTS or src_port in BENIGN_PORTS)
+    got_response = feats.get('dpkts', 0) > 0   # destination actually replied
+    return well_known and got_response
+
 def build_flow_info(flow_src, pred, threshold, with_timestamp=True):
     """Common display record for simulator / PCAP / live flows."""
     is_alert = pred['label'] == 1 and pred['confidence'] >= threshold
+    # Dashboard-level false-positive suppression (does not touch the model).
+    if is_alert and suppress_benign and is_benign_baseline(
+            pred['features'], flow_src.dst_port, flow_src.src_port):
+        is_alert = False
     info = {
         'src_ip': flow_src.src_ip,
         'src_port': flow_src.src_port,
@@ -259,6 +297,7 @@ def build_flow_info(flow_src, pred, threshold, with_timestamp=True):
         'confidence': f"{pred['confidence']*100:.2f}%",
         'raw_confidence': pred['confidence'],
         'raw_label': pred['label'],
+        'is_alert': is_alert,
         'details': pred['features']
     }
     if with_timestamp:
@@ -472,9 +511,9 @@ if analysis_mode == "🖥️ Simulator (Demo Mode)":
             st.session_state.flows.append(flow_info)
             st.session_state.total_bytes += flow_info['bytes']
             
-            if pred['label'] == 1 and pred['confidence'] >= confidence_threshold:
+            if flow_info['is_alert']:
                 st.session_state.alerts.append(flow_info)
-                
+
             # Keep lists trimmed for dashboard performance
             if len(st.session_state.flows) > 500:
                 st.session_state.flows.pop(0)
@@ -571,7 +610,7 @@ elif analysis_mode == "📂 Offline PCAP Analysis":
                 flow_info = build_flow_info(flow, pred, confidence_threshold, with_timestamp=False)
                 flows_list.append(flow_info)
                 st.session_state.total_bytes += flow_info['bytes']
-                if pred['label'] == 1 and pred['confidence'] >= confidence_threshold:
+                if flow_info['is_alert']:
                     alerts_list.append(flow_info)
             
             st.session_state.flows = flows_list
@@ -748,7 +787,7 @@ elif analysis_mode == "🔌 Live Interface Capture":
                 flow_info = build_flow_info(flow, pred, confidence_threshold)
                 st.session_state.flows.append(flow_info)
                 st.session_state.total_bytes += flow_info['bytes']
-                if pred['label'] == 1 and pred['confidence'] >= confidence_threshold:
+                if flow_info['is_alert']:
                     st.session_state.alerts.append(flow_info)
                 
                 # Truncate older records to fit display memory
