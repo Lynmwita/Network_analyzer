@@ -642,7 +642,15 @@ elif analysis_mode == "🔌 Live Interface Capture":
         interface_name = st.text_input("Enter Network Interface name", value="lo")
     with if_col2:
         flow_limit = st.number_input("Capture Flow Limit", min_value=10, max_value=1000, value=100)
-        
+
+    promiscuous = st.checkbox(
+        "Promiscuous mode",
+        value=False,
+        help="Capture traffic for all hosts on the segment. Leave OFF for Wi-Fi "
+             "interfaces (e.g. wlp*/wlan*) — promiscuous mode often fails to "
+             "activate on wireless adapters ('Unable to activate source')."
+    )
+
     cap_col1, cap_col2 = st.columns(2)
     with cap_col1:
         start_cap = st.button("🔴 Start Live Capture", use_container_width=True)
@@ -670,12 +678,18 @@ elif analysis_mode == "🔌 Live Interface Capture":
         
         try:
             if NFSTREAM_AVAILABLE:
-                # Initiate NFStreamer on the network interface
+                # Initiate NFStreamer on the network interface.
+                # - promiscuous_mode defaults OFF: wireless adapters routinely fail
+                #   to activate in promiscuous mode ("Unable to activate source").
+                # - Short idle/active timeouts so flows are emitted within seconds
+                #   instead of blocking on NFStream's 120s/1800s defaults.
                 streamer = NFStreamer(
                     source=interface_name,
                     udps=SecurityPlugin(),
                     statistical_analysis=True,
-                    promiscuous_mode=True
+                    promiscuous_mode=promiscuous,
+                    idle_timeout=2,
+                    active_timeout=10
                 )
             else:
                 # Scapy fallback: capture a batch of packets, then aggregate to flows
@@ -740,8 +754,28 @@ elif analysis_mode == "🔌 Live Interface Capture":
                     st.success("Reached flow capture limit.")
                     break
 
+            # Nothing was emitted — capture opened but saw no completed flows.
+            if count == 0:
+                st.warning(
+                    "Capture ran but no flows were recorded. Generate some traffic "
+                    "(e.g. open a website) while capturing, confirm the interface "
+                    f"name (`{interface_name}`) is correct, and try again."
+                )
+
         except Exception as e:
-            pass
+            msg = str(e).lower()
+            st.error(f"Live capture could not start: {e}")
+            if "activate" in msg or "permission" in msg or "denied" in msg:
+                st.info(
+                    "This usually means one of:\n\n"
+                    f"- **Insufficient privileges** — raw capture needs elevated rights. "
+                    "Launch with `sudo` (Linux) or as Administrator, or grant the Python "
+                    "binary capture capability: `sudo setcap cap_net_raw,cap_net_admin+eip $(readlink -f $(which python3))`.\n"
+                    f"- **Wireless + promiscuous mode** — if `{interface_name}` is a Wi-Fi "
+                    "adapter (wlp*/wlan*), untick **Promiscuous mode** above and retry.\n"
+                    "- **Wrong interface name** — run `ip link` (Linux) or check the adapter "
+                    "list, then enter the exact name."
+                )
 
         # Offer PDF + CSV exports of the captured session
         export_buttons("live", mode_label="Live Interface Capture")
